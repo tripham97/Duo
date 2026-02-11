@@ -10,7 +10,10 @@ const server = http.createServer(app);
 const PORT = Number(process.env.PORT || 3001);
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "*";
 const io = new Server(server, {
-  cors: { origin: CLIENT_ORIGIN }
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
 });
 const MAX_SCORE = 5;
 const MAX_WRONG_GUESSES = 5;
