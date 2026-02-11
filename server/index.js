@@ -11,7 +11,7 @@ const PORT = Number(process.env.PORT || 3001);
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "*";
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: CLIENT_ORIGIN,
     methods: ["GET", "POST"]
   }
 });
@@ -200,12 +200,16 @@ io.on("connection", (socket) => {
       };
 
       socket.join(roomId);
+      socket.emit("ROOM_STATE", rooms[roomId]);
       io.to(roomId).emit("ROOM_STATE", rooms[roomId]);
       return;
     }
     
     const room = rooms[roomId];
-    if (room.pin !== pin) return;
+    if (room.pin !== pin) {
+      socket.emit("JOIN_ERROR", { message: "Invalid PIN for this room." });
+      return;
+    }
 
     socket.join(roomId);
 
@@ -224,7 +228,10 @@ io.on("connection", (socket) => {
         room.game.guesserId = socket.id;
       }
     } else {
-      if (room.users.length >= 2) return;
+      if (room.users.length >= 2) {
+        socket.emit("JOIN_ERROR", { message: "Room is full." });
+        return;
+      }
 
       user = {
         userKey,
@@ -271,6 +278,7 @@ io.on("connection", (socket) => {
 
     syncStatuses(room);
     syncWheelTurn(room);
+    socket.emit("ROOM_STATE", room);
     io.to(roomId).emit("ROOM_STATE", room);
   });
 

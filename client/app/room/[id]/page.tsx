@@ -20,6 +20,7 @@ export default function Room() {
   const [brushSize, setBrushSize] = useState(3);
   const [winnerText, setWinnerText] = useState<string | null>(null);
   const [wrongGuessMessage, setWrongGuessMessage] = useState<string | null>(null);
+  const [joinError, setJoinError] = useState<string | null>(null);
   const [confettiPieces, setConfettiPieces] = useState<any[]>([]);
   const confettiTimer = useRef<any>(null);
   const wrongGuessTimer = useRef<any>(null);
@@ -27,7 +28,13 @@ export default function Room() {
   useEffect(() => {
     if (!roomId || !pin) return;
 
-    const onRoomState = (nextRoom: any) => setRoom(nextRoom);
+    const onRoomState = (nextRoom: any) => {
+      setJoinError(null);
+      setRoom(nextRoom);
+    };
+    const onJoinError = ({ message }: { message: string }) => {
+      setJoinError(message || "Unable to join room.");
+    };
     const onAssignWord = ({ word }: { word: string }) => setSecretWord(word);
     const onClearCanvas = () => {
       window.dispatchEvent(new Event("clearCanvas"));
@@ -68,6 +75,7 @@ export default function Room() {
     socket.on("ROOM_STATE", onRoomState);
     socket.on("ASSIGN_WORD", onAssignWord);
     socket.on("CLEAR_CANVAS", onClearCanvas);
+    socket.on("JOIN_ERROR", onJoinError);
     socket.on("WRONG_GUESS", onWrongGuess);
     socket.on("GAME_WINNER", onWinner);
     socket.on("GAME_RESTARTED", onRestarted);
@@ -85,6 +93,7 @@ export default function Room() {
       socket.off("ROOM_STATE", onRoomState);
       socket.off("ASSIGN_WORD", onAssignWord);
       socket.off("CLEAR_CANVAS", onClearCanvas);
+      socket.off("JOIN_ERROR", onJoinError);
       socket.off("WRONG_GUESS", onWrongGuess);
       socket.off("GAME_WINNER", onWinner);
       socket.off("GAME_RESTARTED", onRestarted);
@@ -99,7 +108,10 @@ export default function Room() {
     socket.emit("SET_ACTIVE_GAME", { roomId, game: activeTab });
   }, [activeTab, roomId]);
 
-  if (!room) return <p>Loading...</p>;
+  if (!room) {
+    if (joinError) return <p>{joinError}</p>;
+    return <p>Loading...</p>;
+  }
 
   const me = room.users.find(
     (u: any) => u.userKey === localStorage.getItem("userKey")
