@@ -7,6 +7,7 @@ import Canvas from "@/components/Canvas";
 import GuessInput from "@/components/GuessInput";
 import StatusBar from "@/components/StatusBar";
 import Wheel from "@/components/Wheel";
+import LobbyNotes from "@/components/LobbyNotes";
 
 export default function Room() {
   const params = useParams<{ id: string }>();
@@ -238,7 +239,12 @@ export default function Room() {
 
             {activeTab === "LOBBY" && (
               <div className="lobby-note">
-                You are in Lobby. Join a game tab above anytime.
+                <p>You are in Lobby. Join a game tab above anytime.</p>
+                <LobbyNotes
+                  roomId={roomId}
+                  notes={room.lobbyNotes || []}
+                  myUserKey={me?.userKey || ""}
+                />
               </div>
             )}
           </div>
