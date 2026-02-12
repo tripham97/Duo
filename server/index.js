@@ -17,6 +17,7 @@ const io = new Server(server, {
 });
 const MAX_SCORE = 5;
 const MAX_WRONG_GUESSES = 5;
+const MAX_LOBBY_NOTES = 50;
 const DEFAULT_WHEEL_OPTIONS = [
   "Movie night pick",
   "Coffee date challenge",
@@ -41,6 +42,10 @@ function normalizeWheelOptions(options) {
     if (result.length >= 24) break;
   }
   return result;
+}
+
+function normalizeLobbyNote(text) {
+  return String(text || "").trim().slice(0, 220);
 }
 
 function syncStatuses(room) {
@@ -158,7 +163,8 @@ io.on("connection", (socket) => {
         wrongGuessCount: 0,
         wheelTurnUserKey: null,
         wheelOptions: [...DEFAULT_WHEEL_OPTIONS]
-      }
+      },
+      lobbyNotes: []
     };
 
     socket.join(roomId);
@@ -196,7 +202,8 @@ io.on("connection", (socket) => {
           wrongGuessCount: 0,
           wheelTurnUserKey: null,
           wheelOptions: [...DEFAULT_WHEEL_OPTIONS]
-        }
+        },
+        lobbyNotes: []
       };
 
       socket.join(roomId);
@@ -485,6 +492,48 @@ io.on("connection", (socket) => {
     const nextOptions = normalizeWheelOptions(options);
     if (nextOptions.length === 0) return;
     room.game.wheelOptions = nextOptions;
+    io.to(roomId).emit("ROOM_STATE", room);
+  });
+
+  // ========================
+  // LOBBY STICKY NOTES
+  // ========================
+  socket.on("ADD_LOBBY_NOTE", ({ roomId, text }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+    const user = room.users.find((u) => u.socketId === socket.id);
+    if (!user) return;
+
+    const content = normalizeLobbyNote(text);
+    if (!content) return;
+
+    room.lobbyNotes = room.lobbyNotes || [];
+    room.lobbyNotes.push({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      userKey: user.userKey,
+      name: user.name,
+      color: user.color,
+      text: content,
+      createdAt: Date.now()
+    });
+
+    if (room.lobbyNotes.length > MAX_LOBBY_NOTES) {
+      room.lobbyNotes = room.lobbyNotes.slice(-MAX_LOBBY_NOTES);
+    }
+
+    io.to(roomId).emit("ROOM_STATE", room);
+  });
+
+  socket.on("DELETE_LOBBY_NOTE", ({ roomId, noteId }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+    const user = room.users.find((u) => u.socketId === socket.id);
+    if (!user) return;
+
+    room.lobbyNotes = (room.lobbyNotes || []).filter(
+      (n) => !(n.id === noteId && n.userKey === user.userKey)
+    );
+
     io.to(roomId).emit("ROOM_STATE", room);
   });
 
