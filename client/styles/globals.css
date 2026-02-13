@@ -411,6 +411,16 @@ input, button, select {
   gap: 10px;
 }
 
+.spotify-host-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  opacity: 0.92;
+}
+
 .spotify-track {
   display: flex;
   align-items: center;

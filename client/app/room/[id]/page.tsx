@@ -248,7 +248,11 @@ export default function Room() {
 
             {activeTab === "MUSIC" && (
               <div className="music-wrap">
-                <SpotifyPanel />
+                <SpotifyPanel
+                  roomId={roomId}
+                  myUserKey={me?.userKey || ""}
+                  musicState={room.music || null}
+                />
               </div>
             )}
 

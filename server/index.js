@@ -18,6 +18,8 @@ const io = new Server(server, {
 const MAX_SCORE = 5;
 const MAX_WRONG_GUESSES = 5;
 const MAX_LOBBY_NOTES = 50;
+const SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token";
+const SPOTIFY_API_BASE = "https://api.spotify.com/v1";
 const DEFAULT_WHEEL_OPTIONS = [
   "Movie night pick",
   "Coffee date challenge",
@@ -46,6 +48,62 @@ function normalizeWheelOptions(options) {
 
 function normalizeLobbyNote(text) {
   return String(text || "").trim().slice(0, 220);
+}
+
+async function refreshSpotifySession(clientId, refreshToken) {
+  if (!clientId || !refreshToken) return null;
+  const params = new URLSearchParams();
+  params.set("client_id", clientId);
+  params.set("grant_type", "refresh_token");
+  params.set("refresh_token", refreshToken);
+
+  const res = await fetch(SPOTIFY_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params
+  });
+  if (!res.ok) {
+    throw new Error("Spotify refresh failed.");
+  }
+  const data = await res.json();
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token || refreshToken,
+    expiresAt: Date.now() + data.expires_in * 1000
+  };
+}
+
+async function ensureRoomSpotifySession(room) {
+  const music = room.music || {};
+  const session = music.hostSession;
+  if (!session?.accessToken) return null;
+  if (Date.now() <= (session.expiresAt || 0) - 30_000) return session;
+
+  const next = await refreshSpotifySession(music.clientId, session.refreshToken);
+  if (!next) return null;
+  room.music.hostSession = next;
+  return next;
+}
+
+async function spotifyHostFetch(room, path, init) {
+  const session = await ensureRoomSpotifySession(room);
+  if (!session?.accessToken) throw new Error("Host Spotify session is missing.");
+
+  const res = await fetch(`${SPOTIFY_API_BASE}${path}`, {
+    ...init,
+    headers: {
+      ...(init?.headers || {}),
+      Authorization: `Bearer ${session.accessToken}`
+    }
+  });
+  if (res.status === 204) return null;
+  if (!res.ok) throw new Error(`Spotify API failed (${res.status}).`);
+  return res.json();
+}
+
+function getMusicDeviceQuery(room) {
+  const deviceId = room.music?.hostDeviceId;
+  return deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : "";
 }
 
 function syncStatuses(room) {
@@ -164,6 +222,15 @@ io.on("connection", (socket) => {
         wheelTurnUserKey: null,
         wheelOptions: [...DEFAULT_WHEEL_OPTIONS]
       },
+      music: {
+        hostUserKey: null,
+        hostSocketId: null,
+        hostName: null,
+        hostDeviceId: null,
+        hasHostSession: false,
+        clientId: null,
+        hostSession: null
+      },
       lobbyNotes: []
     };
 
@@ -202,6 +269,15 @@ io.on("connection", (socket) => {
           wrongGuessCount: 0,
           wheelTurnUserKey: null,
           wheelOptions: [...DEFAULT_WHEEL_OPTIONS]
+        },
+        music: {
+          hostUserKey: null,
+          hostSocketId: null,
+          hostName: null,
+          hostDeviceId: null,
+          hasHostSession: false,
+          clientId: null,
+          hostSession: null
         },
         lobbyNotes: []
       };
@@ -481,6 +557,206 @@ io.on("connection", (socket) => {
   });
 
   // ========================
+  // MUSIC HOST / SHARED CONTROL
+  // ========================
+  socket.on("CLAIM_MUSIC_HOST", ({ roomId }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+    const user = room.users.find((u) => u.socketId === socket.id);
+    if (!user) return;
+
+    const currentHostKey = room.music?.hostUserKey;
+    if (currentHostKey && currentHostKey !== user.userKey) {
+      const currentHost = room.users.find((u) => u.userKey === currentHostKey);
+      if (currentHost?.socketId) {
+        socket.emit("MUSIC_ERROR", {
+          message: `${currentHost.name || "Current host"} is already hosting Spotify.`
+        });
+        return;
+      }
+    }
+
+    room.music.hostUserKey = user.userKey;
+    room.music.hostSocketId = socket.id;
+    room.music.hostName = user.name;
+    room.music.hostDeviceId = null;
+    room.music.hasHostSession = !!room.music.hostSession?.accessToken;
+    io.to(roomId).emit("ROOM_STATE", room);
+  });
+
+  socket.on("RELEASE_MUSIC_HOST", ({ roomId }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+    const user = room.users.find((u) => u.socketId === socket.id);
+    if (!user) return;
+    if (room.music?.hostUserKey !== user.userKey) return;
+
+    room.music.hostUserKey = null;
+    room.music.hostSocketId = null;
+    room.music.hostName = null;
+    room.music.hostDeviceId = null;
+    room.music.hasHostSession = false;
+    room.music.clientId = null;
+    room.music.hostSession = null;
+    io.to(roomId).emit("ROOM_STATE", room);
+  });
+
+  socket.on("SPOTIFY_HOST_SESSION_UPDATE", ({ roomId, clientId, session }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+    const user = room.users.find((u) => u.socketId === socket.id);
+    if (!user) return;
+    if (room.music?.hostUserKey !== user.userKey) return;
+    room.music.hostSocketId = socket.id;
+    if (!session?.accessToken) {
+      room.music.clientId = String(clientId || room.music.clientId || "");
+      room.music.hostSession = null;
+      room.music.hasHostSession = false;
+      room.music.hostDeviceId = null;
+      io.to(roomId).emit("ROOM_STATE", room);
+      return;
+    }
+
+    room.music.clientId = String(clientId || "");
+    room.music.hostSession = {
+      accessToken: session.accessToken,
+      refreshToken: session.refreshToken,
+      expiresAt: Number(session.expiresAt || 0)
+    };
+    room.music.hasHostSession = true;
+    io.to(roomId).emit("ROOM_STATE", room);
+  });
+
+  socket.on("SPOTIFY_HOST_DEVICE_UPDATE", ({ roomId, deviceId }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+    const user = room.users.find((u) => u.socketId === socket.id);
+    if (!user) return;
+    if (room.music?.hostUserKey !== user.userKey) return;
+
+    room.music.hostSocketId = socket.id;
+    room.music.hostDeviceId = String(deviceId || "") || null;
+    io.to(roomId).emit("ROOM_STATE", room);
+  });
+
+  socket.on("MUSIC_CONTROL_REQUEST", async ({ roomId, action, payload }, callback) => {
+    const done = typeof callback === "function" ? callback : () => {};
+    const room = rooms[roomId];
+    if (!room) {
+      done({ ok: false, error: "Room not found." });
+      return;
+    }
+
+    const user = room.users.find((u) => u.socketId === socket.id);
+    if (!user) {
+      done({ ok: false, error: "User not found." });
+      return;
+    }
+
+    if (!room.music?.hostUserKey || !room.music?.hasHostSession) {
+      done({ ok: false, error: "Spotify host is not ready." });
+      return;
+    }
+
+    try {
+      if (action === "CURRENT_TRACK") {
+        const data = await spotifyHostFetch(room, "/me/player/currently-playing", {
+          method: "GET"
+        });
+        if (!data?.item) {
+          done({ ok: true, data: null });
+          return;
+        }
+        done({
+          ok: true,
+          data: {
+            id: data.item.id || `${data.item.name}`,
+            name: data.item.name,
+            artists: (data.item.artists || []).map((a) => a.name).join(", "),
+            album: data.item.album?.name,
+            albumImage: data.item.album?.images?.[0]?.url,
+            durationMs: data.item.duration_ms || 0,
+            progressMs: data.progress_ms || 0,
+            isPlaying: !!data.is_playing
+          }
+        });
+        return;
+      }
+
+      if (action === "SEARCH") {
+        const query = String(payload?.query || "").trim();
+        if (!query) {
+          done({ ok: true, data: [] });
+          return;
+        }
+        const data = await spotifyHostFetch(
+          room,
+          `/search?type=track&limit=8&q=${encodeURIComponent(query)}`,
+          { method: "GET" }
+        );
+        const items = data?.tracks?.items || [];
+        const results = items.map((item) => ({
+          id: item.id,
+          uri: item.uri,
+          name: item.name,
+          artists: (item.artists || []).map((a) => a.name).join(", "),
+          albumImage: item.album?.images?.[2]?.url || item.album?.images?.[0]?.url
+        }));
+        done({ ok: true, data: results });
+        return;
+      }
+
+      if (action === "PLAY_URI") {
+        const uri = String(payload?.uri || "");
+        if (!uri) {
+          done({ ok: false, error: "Track URI is required." });
+          return;
+        }
+        await spotifyHostFetch(room, `/me/player/play${getMusicDeviceQuery(room)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uris: [uri] })
+        });
+        done({ ok: true });
+        return;
+      }
+
+      if (action === "TOGGLE_PLAY_PAUSE") {
+        const current = await spotifyHostFetch(room, "/me/player/currently-playing", {
+          method: "GET"
+        });
+        const isPlaying = !!current?.is_playing;
+        const path = isPlaying
+          ? `/me/player/pause${getMusicDeviceQuery(room)}`
+          : `/me/player/play${getMusicDeviceQuery(room)}`;
+        await spotifyHostFetch(room, path, { method: "PUT" });
+        done({ ok: true });
+        return;
+      }
+
+      if (action === "NEXT") {
+        await spotifyHostFetch(room, `/me/player/next${getMusicDeviceQuery(room)}`, {
+          method: "POST"
+        });
+        done({ ok: true });
+        return;
+      }
+
+      if (action === "PREV") {
+        await spotifyHostFetch(room, `/me/player/previous${getMusicDeviceQuery(room)}`, {
+          method: "POST"
+        });
+        done({ ok: true });
+        return;
+      }
+
+      done({ ok: false, error: "Unsupported action." });
+    } catch (err) {
+      done({ ok: false, error: err?.message || "Music control failed." });
+    }
+  });
+
+  // ========================
   // WHEEL OPTIONS
   // ========================
   socket.on("SET_WHEEL_OPTIONS", ({ roomId, options }) => {
@@ -591,6 +867,15 @@ io.on("connection", (socket) => {
       }
 
       user.socketId = null;
+
+      if (room.music?.hostUserKey === user.userKey) {
+        room.music.hostSocketId = null;
+        room.music.hostDeviceId = null;
+        room.music.hasHostSession = false;
+        room.music.clientId = null;
+        room.music.hostSession = null;
+      }
+
       syncStatuses(room);
       syncWheelTurn(room);
 
