@@ -8,6 +8,7 @@ import GuessInput from "@/components/GuessInput";
 import StatusBar from "@/components/StatusBar";
 import Wheel from "@/components/Wheel";
 import LobbyNotes from "@/components/LobbyNotes";
+import SpotifyPanel from "@/components/SpotifyPanel";
 
 export default function Room() {
   const params = useParams<{ id: string }>();
@@ -17,7 +18,7 @@ export default function Room() {
 
   const [room, setRoom] = useState<any>(null);
   const [secretWord, setSecretWord] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"DRAWING" | "WHEEL" | "LOBBY">("DRAWING");
+  const [activeTab, setActiveTab] = useState<"DRAWING" | "WHEEL" | "MUSIC" | "LOBBY">("DRAWING");
   const [brushSize, setBrushSize] = useState(3);
   const [winnerText, setWinnerText] = useState<string | null>(null);
   const [wrongGuessMessage, setWrongGuessMessage] = useState<string | null>(null);
@@ -119,6 +120,7 @@ export default function Room() {
   );
   const drawingUsers = room.users.filter((u: any) => u.currentGame === "DRAWING");
   const wheelUsers = room.users.filter((u: any) => u.currentGame === "WHEEL");
+  const musicUsers = room.users.filter((u: any) => u.currentGame === "MUSIC");
   const lobbyUsers = room.users.filter((u: any) => u.currentGame === "LOBBY");
 
   const isDrawer =
@@ -163,6 +165,12 @@ export default function Room() {
               Wheel of Fortune ({wheelUsers.length})
             </button>
             <button
+              className={`game-tab ${activeTab === "MUSIC" ? "game-tab-active" : ""}`}
+              onClick={() => setActiveTab("MUSIC")}
+            >
+              Music ({musicUsers.length})
+            </button>
+            <button
               className={`game-tab ${activeTab === "LOBBY" ? "game-tab-active" : ""}`}
               onClick={() => setActiveTab("LOBBY")}
             >
@@ -173,6 +181,7 @@ export default function Room() {
           <div className="tab-presence">
             <div>Drawing: {drawingUsers.map((u: any) => u.name).join(", ") || "-"}</div>
             <div>Wheel: {wheelUsers.map((u: any) => u.name).join(", ") || "-"}</div>
+            <div>Music: {musicUsers.map((u: any) => u.name).join(", ") || "-"}</div>
           </div>
 
           <div className="room-panel">
@@ -234,6 +243,12 @@ export default function Room() {
                   roomId={roomId}
                   options={room.game.wheelOptions || []}
                 />
+              </div>
+            )}
+
+            {activeTab === "MUSIC" && (
+              <div className="music-wrap">
+                <SpotifyPanel />
               </div>
             )}
 

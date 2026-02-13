@@ -18,6 +18,9 @@ export default function StatusBar({
     if (u.currentGame === "LOBBY") {
       return { label: "In Lobby", tone: "waiting" };
     }
+    if (u.currentGame === "MUSIC") {
+      return { label: "In Music", tone: "waiting" };
+    }
 
     if (u.userKey === gameState.drawerUserKey) {
       return { label: "Drawing", tone: "drawing" };
@@ -31,6 +34,7 @@ export default function StatusBar({
 
   function gameLabel(game: string) {
     if (game === "WHEEL") return "Wheel";
+    if (game === "MUSIC") return "Music";
     if (game === "LOBBY") return "Lobby";
     return "Drawing";
   }

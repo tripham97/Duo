@@ -470,7 +470,7 @@ io.on("connection", (socket) => {
   socket.on("SET_ACTIVE_GAME", ({ roomId, game }) => {
     const room = rooms[roomId];
     if (!room) return;
-    if (game !== "DRAWING" && game !== "WHEEL" && game !== "LOBBY") return;
+    if (game !== "DRAWING" && game !== "WHEEL" && game !== "MUSIC" && game !== "LOBBY") return;
 
     const user = room.users.find((u) => u.socketId === socket.id);
     if (!user) return;
