@@ -425,6 +425,11 @@ input, button, select {
   object-fit: cover;
 }
 
+.spotify-sdk-status {
+  font-size: 12px;
+  opacity: 0.86;
+}
+
 .spotify-controls {
   display: flex;
   gap: 8px;

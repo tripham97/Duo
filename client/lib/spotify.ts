@@ -12,6 +12,9 @@ const OAUTH_STATE_KEY = "spotify_oauth_state";
 const RETURN_TO_KEY = "spotify_return_to";
 
 const SCOPES = [
+  "streaming",
+  "user-read-email",
+  "user-read-private",
   "user-read-playback-state",
   "user-read-currently-playing",
   "user-modify-playback-state"

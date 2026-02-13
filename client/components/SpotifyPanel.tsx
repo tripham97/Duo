@@ -38,6 +38,13 @@ type LrcLibGetResponse = {
   plainLyrics?: string;
 };
 
+declare global {
+  interface Window {
+    Spotify?: any;
+    onSpotifyWebPlaybackSDKReady?: () => void;
+  }
+}
+
 export default function SpotifyPanel() {
   const [sessionReady, setSessionReady] = useState(false);
   const [track, setTrack] = useState<Track | null>(null);
@@ -51,10 +58,14 @@ export default function SpotifyPanel() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchTrack[]>([]);
   const [searchError, setSearchError] = useState("");
-  const [embedTrackId, setEmbedTrackId] = useState("");
+  const [sdkStatus, setSdkStatus] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >("idle");
+  const [sdkDeviceId, setSdkDeviceId] = useState("");
   const [lyricsLoading, setLyricsLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const activeLineRef = useRef<HTMLDivElement | null>(null);
+  const playerRef = useRef<any>(null);
 
   const clientId = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || "";
   const redirectUri =
@@ -102,6 +113,39 @@ export default function SpotifyPanel() {
       throw new Error("Spotify API request failed.");
     }
     return res.json();
+  }
+
+  async function loadSpotifySdkScript() {
+    if (window.Spotify) return;
+    await new Promise<void>((resolve, reject) => {
+      const existing = document.getElementById("spotify-player-sdk");
+      if (existing) {
+        const onReady = () => resolve();
+        window.onSpotifyWebPlaybackSDKReady = onReady;
+        setTimeout(() => {
+          if (window.Spotify) resolve();
+        }, 50);
+        return;
+      }
+      const script = document.createElement("script");
+      script.id = "spotify-player-sdk";
+      script.src = "https://sdk.scdn.co/spotify-player.js";
+      script.async = true;
+      script.onerror = () => reject(new Error("Failed to load Spotify SDK."));
+      window.onSpotifyWebPlaybackSDKReady = () => resolve();
+      document.body.appendChild(script);
+    });
+  }
+
+  async function transferToInAppDevice(deviceId: string, keepPaused = true) {
+    await spotifyFetch("/me/player", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        device_ids: [deviceId],
+        play: !keepPaused
+      })
+    });
   }
 
   async function loadCurrentTrack() {
@@ -210,19 +254,23 @@ export default function SpotifyPanel() {
 
   async function togglePlayPause() {
     if (!track) return;
-    await spotifyFetch(track.isPlaying ? "/me/player/pause" : "/me/player/play", {
-      method: "PUT"
-    });
+    const basePath = track.isPlaying ? "/me/player/pause" : "/me/player/play";
+    const path = sdkDeviceId ? `${basePath}?device_id=${sdkDeviceId}` : basePath;
+    await spotifyFetch(path, { method: "PUT" });
     await loadCurrentTrack();
   }
 
   async function nextTrack() {
-    await spotifyFetch("/me/player/next", { method: "POST" });
+    const path = sdkDeviceId ? `/me/player/next?device_id=${sdkDeviceId}` : "/me/player/next";
+    await spotifyFetch(path, { method: "POST" });
     setTimeout(loadCurrentTrack, 350);
   }
 
   async function previousTrack() {
-    await spotifyFetch("/me/player/previous", { method: "POST" });
+    const path = sdkDeviceId
+      ? `/me/player/previous?device_id=${sdkDeviceId}`
+      : "/me/player/previous";
+    await spotifyFetch(path, { method: "POST" });
     setTimeout(loadCurrentTrack, 350);
   }
 
@@ -247,9 +295,6 @@ export default function SpotifyPanel() {
         albumImage: item.album?.images?.[2]?.url || item.album?.images?.[0]?.url
       }));
       setSearchResults(nextResults);
-      if (nextResults[0] && !embedTrackId) {
-        setEmbedTrackId(nextResults[0].id);
-      }
     } catch (e: any) {
       setSearchError(e?.message || "Search failed.");
       setSearchResults([]);
@@ -260,7 +305,8 @@ export default function SpotifyPanel() {
 
   async function playOnSpotifyDevice(uri: string) {
     try {
-      await spotifyFetch("/me/player/play", {
+      const path = sdkDeviceId ? `/me/player/play?device_id=${sdkDeviceId}` : "/me/player/play";
+      await spotifyFetch(path, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ uris: [uri] })
@@ -270,6 +316,25 @@ export default function SpotifyPanel() {
       setSearchError(
         e?.message || "Could not start playback on Spotify device."
       );
+    }
+  }
+
+  async function playHere(item: SearchTrack) {
+    setSearchError("");
+    try {
+      if (!sdkDeviceId) {
+        setSearchError("In-app player not ready yet. Wait a moment and try again.");
+        return;
+      }
+      await transferToInAppDevice(sdkDeviceId, true);
+      await spotifyFetch(`/me/player/play?device_id=${sdkDeviceId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uris: [item.uri] })
+      });
+      setTimeout(loadCurrentTrack, 300);
+    } catch (e: any) {
+      setSearchError(e?.message || "Could not play track in app.");
     }
   }
 
@@ -286,6 +351,102 @@ export default function SpotifyPanel() {
   useEffect(() => {
     localStorage.setItem("spotify_karaoke_lead_in_ms", String(leadInMs));
   }, [leadInMs]);
+
+  useEffect(() => {
+    const hasSession = !!getSession();
+    if (!hasSession || !clientId) return;
+    let ignore = false;
+
+    const initSdk = async () => {
+      try {
+        setSdkStatus("loading");
+        await loadSpotifySdkScript();
+        if (ignore || !window.Spotify) return;
+
+        const player = new window.Spotify.Player({
+          name: "Duo In-App Player",
+          getOAuthToken: async (cb: (token: string) => void) => {
+            try {
+              const session = await ensureSession();
+              cb(session?.accessToken || "");
+            } catch {
+              cb("");
+            }
+          },
+          volume: 0.8
+        });
+
+        player.addListener("ready", async ({ device_id }: { device_id: string }) => {
+          if (ignore) return;
+          setSdkDeviceId(device_id);
+          setSdkStatus("ready");
+          try {
+            await transferToInAppDevice(device_id, true);
+          } catch {
+            setSearchError("In-app player ready, but device transfer failed.");
+          }
+        });
+
+        player.addListener("not_ready", () => {
+          if (ignore) return;
+          setSdkStatus("error");
+          setSdkDeviceId("");
+        });
+
+        player.addListener("player_state_changed", (state: any) => {
+          if (ignore || !state?.track_window?.current_track) return;
+          const t = state.track_window.current_track;
+          const artists = (t.artists || []).map((a: any) => a.name).join(", ");
+          setTrack({
+            id: t.id || `${t.name}-${artists}`,
+            name: t.name,
+            artists,
+            album: t.album?.name,
+            albumImage: t.album?.images?.[0]?.url,
+            durationMs: state.duration || t.duration_ms || 0,
+            progressMs: state.position || 0,
+            isPlaying: !state.paused
+          });
+          setPlaybackMs(state.position || 0);
+        });
+
+        player.addListener("initialization_error", ({ message }: { message: string }) => {
+          if (ignore) return;
+          setSdkStatus("error");
+          setSearchError(message || "Spotify SDK init failed.");
+        });
+
+        player.addListener("authentication_error", ({ message }: { message: string }) => {
+          if (ignore) return;
+          setSdkStatus("error");
+          setSearchError(message || "Spotify SDK auth failed. Reconnect Spotify.");
+        });
+
+        const ok = await player.connect();
+        if (!ok && !ignore) {
+          setSdkStatus("error");
+          setSearchError("Could not connect to Spotify in-app player.");
+          return;
+        }
+        playerRef.current = player;
+      } catch (e: any) {
+        if (ignore) return;
+        setSdkStatus("error");
+        setSearchError(e?.message || "Failed to start Spotify in-app player.");
+      }
+    };
+
+    initSdk();
+    return () => {
+      ignore = true;
+      if (playerRef.current) {
+        playerRef.current.disconnect();
+        playerRef.current = null;
+      }
+      setSdkStatus("idle");
+      setSdkDeviceId("");
+    };
+  }, [sessionReady, clientId]);
 
   useEffect(() => {
     const hasSession = !!getSession();
@@ -346,12 +507,6 @@ export default function SpotifyPanel() {
     }
   }, [activeLineIndex, track?.id]);
 
-  useEffect(() => {
-    if (track?.id && !embedTrackId) {
-      setEmbedTrackId(track.id);
-    }
-  }, [track?.id, embedTrackId]);
-
   const connected = !!getSession();
   const totalDurationMs = track?.durationMs || 0;
   const progressPercent =
@@ -390,6 +545,16 @@ export default function SpotifyPanel() {
               <div>{track?.artists || "Open Spotify and play a song"}</div>
             </div>
           </div>
+          <div className="spotify-sdk-status">
+            In-app player:{" "}
+            {sdkStatus === "ready"
+              ? "Ready"
+              : sdkStatus === "loading"
+                ? "Starting..."
+                : sdkStatus === "error"
+                  ? "Error"
+                  : "Idle"}
+          </div>
           {track && (
             <div className="spotify-progress">
               <div className="spotify-progress-track" aria-hidden="true">
@@ -418,6 +583,12 @@ export default function SpotifyPanel() {
                 setPlaybackMs(0);
                 setActiveLineIndex(-1);
                 setLeadLineIndex(-1);
+                if (playerRef.current) {
+                  playerRef.current.disconnect();
+                  playerRef.current = null;
+                }
+                setSdkStatus("idle");
+                setSdkDeviceId("");
                 setSessionReady((v) => !v);
               }}
             >
@@ -457,9 +628,7 @@ export default function SpotifyPanel() {
                       </div>
                     </div>
                     <div className="spotify-search-actions">
-                      <button onClick={() => setEmbedTrackId(item.id)}>
-                        Play Here
-                      </button>
+                      <button onClick={() => playHere(item)}>Play Here</button>
                       <button onClick={() => playOnSpotifyDevice(item.uri)}>
                         Play on Spotify
                       </button>
@@ -469,19 +638,6 @@ export default function SpotifyPanel() {
               </div>
             )}
           </div>
-
-          {embedTrackId && (
-            <div className="spotify-embed-wrap">
-              <iframe
-                title="Spotify Embedded Player"
-                src={`https://open.spotify.com/embed/track/${embedTrackId}?utm_source=generator`}
-                width="100%"
-                height="152"
-                allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
-                loading="lazy"
-              />
-            </div>
-          )}
 
           <div className="spotify-lyrics">
             <div className="spotify-lyrics-head">
