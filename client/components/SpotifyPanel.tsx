@@ -25,6 +25,14 @@ type SyncedLine = {
   text: string;
 };
 
+type SearchTrack = {
+  id: string;
+  uri: string;
+  name: string;
+  artists: string;
+  albumImage?: string;
+};
+
 type LrcLibGetResponse = {
   syncedLyrics?: string;
   plainLyrics?: string;
@@ -39,6 +47,11 @@ export default function SpotifyPanel() {
   const [activeLineIndex, setActiveLineIndex] = useState(-1);
   const [leadLineIndex, setLeadLineIndex] = useState(-1);
   const [leadInMs, setLeadInMs] = useState(1200);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchResults, setSearchResults] = useState<SearchTrack[]>([]);
+  const [searchError, setSearchError] = useState("");
+  const [embedTrackId, setEmbedTrackId] = useState("");
   const [lyricsLoading, setLyricsLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const activeLineRef = useRef<HTMLDivElement | null>(null);
@@ -213,6 +226,53 @@ export default function SpotifyPanel() {
     setTimeout(loadCurrentTrack, 350);
   }
 
+  async function searchSongs() {
+    const q = searchQuery.trim();
+    if (!q) {
+      setSearchResults([]);
+      return;
+    }
+    setSearchLoading(true);
+    setSearchError("");
+    try {
+      const data = await spotifyFetch(
+        `/search?type=track&limit=8&q=${encodeURIComponent(q)}`
+      );
+      const items = data?.tracks?.items || [];
+      const nextResults: SearchTrack[] = items.map((item: any) => ({
+        id: item.id,
+        uri: item.uri,
+        name: item.name,
+        artists: (item.artists || []).map((a: any) => a.name).join(", "),
+        albumImage: item.album?.images?.[2]?.url || item.album?.images?.[0]?.url
+      }));
+      setSearchResults(nextResults);
+      if (nextResults[0] && !embedTrackId) {
+        setEmbedTrackId(nextResults[0].id);
+      }
+    } catch (e: any) {
+      setSearchError(e?.message || "Search failed.");
+      setSearchResults([]);
+    } finally {
+      setSearchLoading(false);
+    }
+  }
+
+  async function playOnSpotifyDevice(uri: string) {
+    try {
+      await spotifyFetch("/me/player/play", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uris: [uri] })
+      });
+      setTimeout(loadCurrentTrack, 350);
+    } catch (e: any) {
+      setSearchError(
+        e?.message || "Could not start playback on Spotify device."
+      );
+    }
+  }
+
   useEffect(() => {
     setSessionReady((v) => !v);
     const saved = localStorage.getItem("spotify_karaoke_lead_in_ms");
@@ -285,6 +345,12 @@ export default function SpotifyPanel() {
       activeLineRef.current.scrollIntoView({ block: "center", behavior: "smooth" });
     }
   }, [activeLineIndex, track?.id]);
+
+  useEffect(() => {
+    if (track?.id && !embedTrackId) {
+      setEmbedTrackId(track.id);
+    }
+  }, [track?.id, embedTrackId]);
 
   const connected = !!getSession();
   const totalDurationMs = track?.durationMs || 0;
@@ -359,6 +425,64 @@ export default function SpotifyPanel() {
             </button>
           </div>
 
+          <div className="spotify-search">
+            <div className="spotify-search-row">
+              <input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search songs..."
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    searchSongs();
+                  }
+                }}
+              />
+              <button onClick={searchSongs} disabled={searchLoading}>
+                {searchLoading ? "Searching..." : "Search"}
+              </button>
+            </div>
+
+            {searchResults.length > 0 && (
+              <div className="spotify-search-results">
+                {searchResults.map((item) => (
+                  <div key={item.id} className="spotify-search-item">
+                    <div className="spotify-search-meta">
+                      {item.albumImage && (
+                        <img src={item.albumImage} alt={`${item.name} cover`} />
+                      )}
+                      <div>
+                        <strong>{item.name}</strong>
+                        <div>{item.artists}</div>
+                      </div>
+                    </div>
+                    <div className="spotify-search-actions">
+                      <button onClick={() => setEmbedTrackId(item.id)}>
+                        Play Here
+                      </button>
+                      <button onClick={() => playOnSpotifyDevice(item.uri)}>
+                        Play on Spotify
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {embedTrackId && (
+            <div className="spotify-embed-wrap">
+              <iframe
+                title="Spotify Embedded Player"
+                src={`https://open.spotify.com/embed/track/${embedTrackId}?utm_source=generator`}
+                width="100%"
+                height="152"
+                allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+                loading="lazy"
+              />
+            </div>
+          )}
+
           <div className="spotify-lyrics">
             <div className="spotify-lyrics-head">
               <h4>Lyrics</h4>
@@ -404,6 +528,7 @@ export default function SpotifyPanel() {
       )}
 
       {error && <p className="spotify-error">{error}</p>}
+      {searchError && <p className="spotify-error">{searchError}</p>}
     </div>
   );
 }
