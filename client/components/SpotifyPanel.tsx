@@ -87,6 +87,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
   const [sdkStatus, setSdkStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [sdkDeviceId, setSdkDeviceId] = useState("");
   const [sdkActivated, setSdkActivated] = useState(false);
+  const [guestAudioEnabled, setGuestAudioEnabled] = useState(false);
   const [lyricsLoading, setLyricsLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const activeLineRef = useRef<HTMLDivElement | null>(null);
@@ -714,6 +715,33 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
           <div>{track?.artists || "Host needs to play a song"}</div>
         </div>
       </div>
+
+      {!isHost && (
+        <div className="spotify-host-row">
+          <div>
+            Listener audio: {guestAudioEnabled ? "Enabled" : "Off"}
+          </div>
+          <button
+            onClick={() => setGuestAudioEnabled((v) => !v)}
+            disabled={!track?.id}
+          >
+            {guestAudioEnabled ? "Disable Audio" : "Enable Audio"}
+          </button>
+        </div>
+      )}
+
+      {!isHost && guestAudioEnabled && track?.id && (
+        <div className="spotify-embed-wrap">
+          <iframe
+            title="Spotify Guest Audio"
+            src={`https://open.spotify.com/embed/track/${track.id}?utm_source=generator`}
+            width="100%"
+            height="152"
+            allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+            loading="lazy"
+          />
+        </div>
+      )}
 
       {track && (
         <div className="spotify-progress">
