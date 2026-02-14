@@ -74,6 +74,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
   const [searchError, setSearchError] = useState("");
   const [sdkStatus, setSdkStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [sdkDeviceId, setSdkDeviceId] = useState("");
+  const [sdkActivated, setSdkActivated] = useState(false);
   const [lyricsLoading, setLyricsLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const activeLineRef = useRef<HTMLDivElement | null>(null);
@@ -178,6 +179,18 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
     }
   }
 
+  async function ensureSdkActivated() {
+    if (!isHost) return;
+    if (!playerRef.current) return;
+    if (sdkActivated) return;
+    try {
+      await playerRef.current.activateElement();
+      setSdkActivated(true);
+    } catch {
+      // Ignore and let controls surface playback errors.
+    }
+  }
+
   function parseSyncedLyrics(lrc: string): SyncedLine[] {
     const lines = lrc.split(/\r?\n/);
     const parsed: SyncedLine[] = [];
@@ -259,6 +272,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
 
   async function togglePlayPause() {
     try {
+      await ensureSdkActivated();
       await requestMusicControl("TOGGLE_PLAY_PAUSE");
       setTimeout(loadCurrentTrack, 220);
     } catch (e: any) {
@@ -268,6 +282,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
 
   async function nextTrack() {
     try {
+      await ensureSdkActivated();
       await requestMusicControl("NEXT");
       setTimeout(loadCurrentTrack, 220);
     } catch (e: any) {
@@ -277,6 +292,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
 
   async function previousTrack() {
     try {
+      await ensureSdkActivated();
       await requestMusicControl("PREV");
       setTimeout(loadCurrentTrack, 220);
     } catch (e: any) {
@@ -305,6 +321,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
 
   async function playUri(uri: string) {
     try {
+      await ensureSdkActivated();
       await requestMusicControl("PLAY_URI", { uri });
       setTimeout(loadCurrentTrack, 240);
     } catch (e: any) {
@@ -339,6 +356,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
       }
       setSdkStatus("idle");
       setSdkDeviceId("");
+      setSdkActivated(false);
       return;
     }
 
@@ -428,6 +446,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
       }
       setSdkStatus("idle");
       setSdkDeviceId("");
+      setSdkActivated(false);
     };
   }, [isHost, connected, clientId, roomId, sessionReady]);
 
@@ -536,7 +555,11 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
           <div>
             In-app player: {sdkStatus === "ready" ? "Ready" : sdkStatus === "loading" ? "Starting..." : sdkStatus === "error" ? "Error" : "Idle"}
             {sdkDeviceId ? ` (Device ${sdkDeviceId.slice(0, 6)}...)` : ""}
+            {sdkStatus === "ready" && !sdkActivated ? " - Audio not enabled yet" : ""}
           </div>
+          {sdkStatus === "ready" && !sdkActivated && (
+            <button onClick={ensureSdkActivated}>Enable Audio</button>
+          )}
           <button
             onClick={() => {
               clearSession();
@@ -546,6 +569,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
               }
               setSdkStatus("idle");
               setSdkDeviceId("");
+              setSdkActivated(false);
               socket.emit("SPOTIFY_HOST_SESSION_UPDATE", {
                 roomId,
                 clientId,
