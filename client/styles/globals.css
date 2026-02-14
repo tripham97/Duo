@@ -184,6 +184,9 @@ input, button, select {
   justify-items: center;
   gap: 12px;
   padding: 10px 12px;
+  max-height: calc(100vh - 150px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.16);
   background: rgba(11, 18, 31, 0.72);
