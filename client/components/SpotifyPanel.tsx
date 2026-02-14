@@ -154,7 +154,14 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
       }
     });
     if (res.status === 204) return null;
-    if (!res.ok) throw new Error(`Spotify API failed (${res.status}).`);
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const body = await res.json();
+        detail = body?.error?.message ? `: ${body.error.message}` : "";
+      } catch {}
+      throw new Error(`Spotify API failed (${res.status})${detail}`);
+    }
     return res.json();
   }
 
@@ -301,9 +308,13 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
     try {
       await ensureSdkActivated();
       if (isHost) {
-        const basePath = track?.isPlaying ? "/me/player/pause" : "/me/player/play";
-        const path = sdkDeviceId ? `${basePath}?device_id=${sdkDeviceId}` : basePath;
-        await hostSpotifyFetch(path, { method: "PUT" });
+        if (playerRef.current && sdkStatus === "ready") {
+          await playerRef.current.togglePlay();
+        } else {
+          const basePath = track?.isPlaying ? "/me/player/pause" : "/me/player/play";
+          const path = sdkDeviceId ? `${basePath}?device_id=${sdkDeviceId}` : basePath;
+          await hostSpotifyFetch(path, { method: "PUT" });
+        }
       } else {
         await requestMusicControl("TOGGLE_PLAY_PAUSE");
       }
@@ -317,8 +328,12 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
     try {
       await ensureSdkActivated();
       if (isHost) {
-        const path = sdkDeviceId ? `/me/player/next?device_id=${sdkDeviceId}` : "/me/player/next";
-        await hostSpotifyFetch(path, { method: "POST" });
+        if (playerRef.current && sdkStatus === "ready") {
+          await playerRef.current.nextTrack();
+        } else {
+          const path = sdkDeviceId ? `/me/player/next?device_id=${sdkDeviceId}` : "/me/player/next";
+          await hostSpotifyFetch(path, { method: "POST" });
+        }
       } else {
         await requestMusicControl("NEXT");
       }
@@ -332,10 +347,14 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
     try {
       await ensureSdkActivated();
       if (isHost) {
-        const path = sdkDeviceId
-          ? `/me/player/previous?device_id=${sdkDeviceId}`
-          : "/me/player/previous";
-        await hostSpotifyFetch(path, { method: "POST" });
+        if (playerRef.current && sdkStatus === "ready") {
+          await playerRef.current.previousTrack();
+        } else {
+          const path = sdkDeviceId
+            ? `/me/player/previous?device_id=${sdkDeviceId}`
+            : "/me/player/previous";
+          await hostSpotifyFetch(path, { method: "POST" });
+        }
       } else {
         await requestMusicControl("PREV");
       }
@@ -369,11 +388,19 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
       await ensureSdkActivated();
       if (isHost) {
         const path = sdkDeviceId ? `/me/player/play?device_id=${sdkDeviceId}` : "/me/player/play";
-        await hostSpotifyFetch(path, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ uris: [uri] })
-        });
+        try {
+          await hostSpotifyFetch(path, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ uris: [uri] })
+          });
+        } catch {
+          await hostSpotifyFetch("/me/player/play", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ uris: [uri] })
+          });
+        }
       } else {
         await requestMusicControl("PLAY_URI", { uri });
       }
@@ -382,6 +409,33 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
       setSearchError(e?.message || "Could not start playback.");
     }
   }
+
+  useEffect(() => {
+    const onMusicError = ({ message }: { message: string }) => {
+      setSearchError(message || "Music action failed.");
+    };
+    socket.on("MUSIC_ERROR", onMusicError);
+    return () => {
+      socket.off("MUSIC_ERROR", onMusicError);
+    };
+  }, []);
+
+  async function claimHost() {
+    if (!roomId) return;
+    setSearchError("");
+    socket.emit("CLAIM_MUSIC_HOST", { roomId });
+  }
+
+  async function releaseHost() {
+    if (!roomId) return;
+    setSearchError("");
+    socket.emit("RELEASE_MUSIC_HOST", { roomId });
+  }
+
+  useEffect(() => {
+    // Clear stale errors when host state changes.
+    setSearchError("");
+  }, [isHost, hasHost, hostReady]);
 
   useEffect(() => {
     setSessionReady((v) => !v);
@@ -581,11 +635,13 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
           Host: <b>{hostName}</b>
           {hostReady ? " (Ready)" : " (Not connected)"}
         </div>
-        {!hasHost && (
-          <button onClick={() => socket.emit("CLAIM_MUSIC_HOST", { roomId })}>Become Host</button>
+        {!isHost && (
+          <button disabled={!roomId} onClick={claimHost}>
+            {hasHost ? "Take Host" : "Become Host"}
+          </button>
         )}
         {isHost && (
-          <button onClick={() => socket.emit("RELEASE_MUSIC_HOST", { roomId })}>Release Host</button>
+          <button onClick={releaseHost}>Release Host</button>
         )}
       </div>
 
