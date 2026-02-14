@@ -52,6 +52,24 @@ function normalizeLobbyNote(text) {
   return String(text || "").trim().slice(0, 220);
 }
 
+function ensureRoomMusic(room) {
+  if (!room.music || typeof room.music !== "object") {
+    room.music = {};
+  }
+  room.music.hostUserKey = room.music.hostUserKey || null;
+  room.music.hostSocketId = room.music.hostSocketId || null;
+  room.music.hostName = room.music.hostName || null;
+  room.music.hostDeviceId = room.music.hostDeviceId || null;
+  room.music.hasHostSession = !!room.music.hasHostSession;
+  room.music.clientId = room.music.clientId || null;
+  room.music.hostSession = room.music.hostSession || null;
+  room.music.suggestions = Array.isArray(room.music.suggestions)
+    ? room.music.suggestions
+    : [];
+  room.music.queue = Array.isArray(room.music.queue) ? room.music.queue : [];
+  return room.music;
+}
+
 function makeId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -96,7 +114,7 @@ async function refreshSpotifySession(clientId, refreshToken) {
 }
 
 async function ensureRoomSpotifySession(room) {
-  const music = room.music || {};
+  const music = ensureRoomMusic(room);
   const session = music.hostSession;
   if (!session?.accessToken) return null;
   if (Date.now() <= (session.expiresAt || 0) - 30_000) return session;
@@ -124,7 +142,7 @@ async function spotifyHostFetch(room, path, init) {
 }
 
 function getMusicDeviceQuery(room) {
-  const deviceId = room.music?.hostDeviceId;
+  const deviceId = ensureRoomMusic(room).hostDeviceId;
   return deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : "";
 }
 
@@ -315,6 +333,7 @@ io.on("connection", (socket) => {
     }
     
     const room = rooms[roomId];
+    ensureRoomMusic(room);
     if (room.pin !== pin) {
       socket.emit("JOIN_ERROR", { message: "Invalid PIN for this room." });
       return;
@@ -588,10 +607,11 @@ io.on("connection", (socket) => {
   socket.on("CLAIM_MUSIC_HOST", ({ roomId }) => {
     const room = rooms[roomId];
     if (!room) return;
+    const music = ensureRoomMusic(room);
     const user = room.users.find((u) => u.socketId === socket.id);
     if (!user) return;
 
-    const currentHostKey = room.music?.hostUserKey;
+    const currentHostKey = music.hostUserKey;
     if (currentHostKey && currentHostKey !== user.userKey) {
       const currentHost = room.users.find((u) => u.userKey === currentHostKey);
       if (currentHost?.socketId) {
@@ -602,50 +622,51 @@ io.on("connection", (socket) => {
       }
     }
 
-    room.music.hostUserKey = user.userKey;
-    room.music.hostSocketId = socket.id;
-    room.music.hostName = user.name;
-    room.music.hostDeviceId = null;
-    room.music.hasHostSession = !!room.music.hostSession?.accessToken;
+    music.hostUserKey = user.userKey;
+    music.hostSocketId = socket.id;
+    music.hostName = user.name;
+    music.hostDeviceId = null;
+    music.hasHostSession = !!music.hostSession?.accessToken;
     io.to(roomId).emit("ROOM_STATE", room);
   });
 
   socket.on("RELEASE_MUSIC_HOST", ({ roomId }) => {
     const room = rooms[roomId];
     if (!room) return;
+    const music = ensureRoomMusic(room);
     const user = room.users.find((u) => u.socketId === socket.id);
     if (!user) return;
-    if (room.music?.hostUserKey !== user.userKey) return;
+    if (music.hostUserKey !== user.userKey) return;
 
-    room.music.hostUserKey = null;
-    room.music.hostSocketId = null;
-    room.music.hostName = null;
-    room.music.hostDeviceId = null;
-    room.music.hasHostSession = false;
-    room.music.clientId = null;
-    room.music.hostSession = null;
+    music.hostUserKey = null;
+    music.hostSocketId = null;
+    music.hostName = null;
+    music.hostDeviceId = null;
+    music.hasHostSession = false;
+    music.clientId = null;
+    music.hostSession = null;
     io.to(roomId).emit("ROOM_STATE", room);
   });
 
   socket.on("MUSIC_SUGGEST_TRACK", ({ roomId, track }) => {
     const room = rooms[roomId];
     if (!room) return;
+    const music = ensureRoomMusic(room);
     const user = room.users.find((u) => u.socketId === socket.id);
     if (!user) return;
 
     const normalized = normalizeTrackCandidate(track);
     if (!normalized) return;
 
-    room.music.suggestions = room.music.suggestions || [];
-    room.music.suggestions.push({
+    music.suggestions.push({
       suggestionId: makeId("sg"),
       ...normalized,
       suggestedByUserKey: user.userKey,
       suggestedByName: user.name,
       createdAt: Date.now()
     });
-    if (room.music.suggestions.length > MAX_MUSIC_SUGGESTIONS) {
-      room.music.suggestions = room.music.suggestions.slice(-MAX_MUSIC_SUGGESTIONS);
+    if (music.suggestions.length > MAX_MUSIC_SUGGESTIONS) {
+      music.suggestions = music.suggestions.slice(-MAX_MUSIC_SUGGESTIONS);
     }
     io.to(roomId).emit("ROOM_STATE", room);
   });
@@ -653,18 +674,17 @@ io.on("connection", (socket) => {
   socket.on("MUSIC_ACCEPT_SUGGESTION", ({ roomId, suggestionId }) => {
     const room = rooms[roomId];
     if (!room) return;
+    const music = ensureRoomMusic(room);
     const user = room.users.find((u) => u.socketId === socket.id);
     if (!user) return;
-    if (room.music?.hostUserKey !== user.userKey) return;
+    if (music.hostUserKey !== user.userKey) return;
 
-    room.music.suggestions = room.music.suggestions || [];
-    const idx = room.music.suggestions.findIndex((s) => s.suggestionId === suggestionId);
+    const idx = music.suggestions.findIndex((s) => s.suggestionId === suggestionId);
     if (idx < 0) return;
-    const suggestion = room.music.suggestions[idx];
-    room.music.suggestions.splice(idx, 1);
+    const suggestion = music.suggestions[idx];
+    music.suggestions.splice(idx, 1);
 
-    room.music.queue = room.music.queue || [];
-    room.music.queue.push({
+    music.queue.push({
       queueId: makeId("q"),
       id: suggestion.id,
       uri: suggestion.uri,
@@ -676,8 +696,8 @@ io.on("connection", (socket) => {
       acceptedByUserKey: user.userKey,
       acceptedAt: Date.now()
     });
-    if (room.music.queue.length > MAX_MUSIC_QUEUE) {
-      room.music.queue = room.music.queue.slice(-MAX_MUSIC_QUEUE);
+    if (music.queue.length > MAX_MUSIC_QUEUE) {
+      music.queue = music.queue.slice(-MAX_MUSIC_QUEUE);
     }
     io.to(roomId).emit("ROOM_STATE", room);
   });
@@ -685,11 +705,12 @@ io.on("connection", (socket) => {
   socket.on("MUSIC_REJECT_SUGGESTION", ({ roomId, suggestionId }) => {
     const room = rooms[roomId];
     if (!room) return;
+    const music = ensureRoomMusic(room);
     const user = room.users.find((u) => u.socketId === socket.id);
     if (!user) return;
-    if (room.music?.hostUserKey !== user.userKey) return;
+    if (music.hostUserKey !== user.userKey) return;
 
-    room.music.suggestions = (room.music.suggestions || []).filter(
+    music.suggestions = music.suggestions.filter(
       (s) => s.suggestionId !== suggestionId
     );
     io.to(roomId).emit("ROOM_STATE", room);
@@ -698,15 +719,15 @@ io.on("connection", (socket) => {
   socket.on("MUSIC_ADD_TO_QUEUE", ({ roomId, track }) => {
     const room = rooms[roomId];
     if (!room) return;
+    const music = ensureRoomMusic(room);
     const user = room.users.find((u) => u.socketId === socket.id);
     if (!user) return;
-    if (room.music?.hostUserKey !== user.userKey) return;
+    if (music.hostUserKey !== user.userKey) return;
 
     const normalized = normalizeTrackCandidate(track);
     if (!normalized) return;
 
-    room.music.queue = room.music.queue || [];
-    room.music.queue.push({
+    music.queue.push({
       queueId: makeId("q"),
       ...normalized,
       suggestedByUserKey: user.userKey,
@@ -714,8 +735,8 @@ io.on("connection", (socket) => {
       acceptedByUserKey: user.userKey,
       acceptedAt: Date.now()
     });
-    if (room.music.queue.length > MAX_MUSIC_QUEUE) {
-      room.music.queue = room.music.queue.slice(-MAX_MUSIC_QUEUE);
+    if (music.queue.length > MAX_MUSIC_QUEUE) {
+      music.queue = music.queue.slice(-MAX_MUSIC_QUEUE);
     }
     io.to(roomId).emit("ROOM_STATE", room);
   });
@@ -723,38 +744,40 @@ io.on("connection", (socket) => {
   socket.on("SPOTIFY_HOST_SESSION_UPDATE", ({ roomId, clientId, session }) => {
     const room = rooms[roomId];
     if (!room) return;
+    const music = ensureRoomMusic(room);
     const user = room.users.find((u) => u.socketId === socket.id);
     if (!user) return;
-    if (room.music?.hostUserKey !== user.userKey) return;
-    room.music.hostSocketId = socket.id;
+    if (music.hostUserKey !== user.userKey) return;
+    music.hostSocketId = socket.id;
     if (!session?.accessToken) {
-      room.music.clientId = String(clientId || room.music.clientId || "");
-      room.music.hostSession = null;
-      room.music.hasHostSession = false;
-      room.music.hostDeviceId = null;
+      music.clientId = String(clientId || music.clientId || "");
+      music.hostSession = null;
+      music.hasHostSession = false;
+      music.hostDeviceId = null;
       io.to(roomId).emit("ROOM_STATE", room);
       return;
     }
 
-    room.music.clientId = String(clientId || "");
-    room.music.hostSession = {
+    music.clientId = String(clientId || "");
+    music.hostSession = {
       accessToken: session.accessToken,
       refreshToken: session.refreshToken,
       expiresAt: Number(session.expiresAt || 0)
     };
-    room.music.hasHostSession = true;
+    music.hasHostSession = true;
     io.to(roomId).emit("ROOM_STATE", room);
   });
 
   socket.on("SPOTIFY_HOST_DEVICE_UPDATE", ({ roomId, deviceId }) => {
     const room = rooms[roomId];
     if (!room) return;
+    const music = ensureRoomMusic(room);
     const user = room.users.find((u) => u.socketId === socket.id);
     if (!user) return;
-    if (room.music?.hostUserKey !== user.userKey) return;
+    if (music.hostUserKey !== user.userKey) return;
 
-    room.music.hostSocketId = socket.id;
-    room.music.hostDeviceId = String(deviceId || "") || null;
+    music.hostSocketId = socket.id;
+    music.hostDeviceId = String(deviceId || "") || null;
     io.to(roomId).emit("ROOM_STATE", room);
   });
 
@@ -765,6 +788,7 @@ io.on("connection", (socket) => {
       done({ ok: false, error: "Room not found." });
       return;
     }
+    const music = ensureRoomMusic(room);
 
     const user = room.users.find((u) => u.socketId === socket.id);
     if (!user) {
@@ -772,7 +796,7 @@ io.on("connection", (socket) => {
       return;
     }
 
-    if (!room.music?.hostUserKey || !room.music?.hasHostSession) {
+    if (!music.hostUserKey || !music.hasHostSession) {
       done({ ok: false, error: "Spotify host is not ready." });
       return;
     }
@@ -841,17 +865,16 @@ io.on("connection", (socket) => {
       }
 
       if (action === "PLAY_QUEUED_NEXT") {
-        if (user.userKey !== room.music?.hostUserKey) {
+        if (user.userKey !== music.hostUserKey) {
           done({ ok: false, error: "Only host can play from queue." });
           return;
         }
-        room.music.queue = room.music.queue || [];
-        if (room.music.queue.length === 0) {
+        if (music.queue.length === 0) {
           done({ ok: false, error: "Queue is empty." });
           return;
         }
 
-        const next = room.music.queue.shift();
+        const next = music.queue.shift();
         await spotifyHostFetch(room, `/me/player/play${getMusicDeviceQuery(room)}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
