@@ -34,6 +34,16 @@ type SearchTrack = {
   albumImage?: string;
 };
 
+type SuggestionTrack = SearchTrack & {
+  suggestionId: string;
+  suggestedByName?: string;
+};
+
+type QueueTrack = SearchTrack & {
+  queueId: string;
+  suggestedByName?: string;
+};
+
 type LrcLibGetResponse = {
   syncedLyrics?: string;
   plainLyrics?: string;
@@ -44,6 +54,8 @@ type MusicState = {
   hostName?: string | null;
   hasHostSession?: boolean;
   hostDeviceId?: string | null;
+  suggestions?: SuggestionTrack[];
+  queue?: QueueTrack[];
 } | null;
 
 type SpotifyPanelProps = {
@@ -90,6 +102,8 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
   const hasHost = !!musicState?.hostUserKey;
   const hostReady = !!musicState?.hasHostSession;
   const connected = !!getSession();
+  const suggestions = musicState?.suggestions || [];
+  const queue = musicState?.queue || [];
 
   function formatTime(ms: number) {
     const totalSec = Math.max(0, Math.floor(ms / 1000));
@@ -146,6 +160,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
   async function hostSpotifyFetch(path: string, init?: RequestInit) {
     const session = await ensureSession();
     if (!session?.accessToken) throw new Error("Host Spotify session missing.");
+
     const res = await fetch(`https://api.spotify.com/v1${path}`, {
       ...init,
       headers: {
@@ -153,6 +168,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
         Authorization: `Bearer ${session.accessToken}`
       }
     });
+
     if (res.status === 204) return null;
     if (!res.ok) {
       let detail = "";
@@ -162,6 +178,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
       } catch {}
       throw new Error(`Spotify API failed (${res.status})${detail}`);
     }
+
     return res.json();
   }
 
@@ -170,13 +187,13 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
     await new Promise<void>((resolve, reject) => {
       const existing = document.getElementById("spotify-player-sdk");
       if (existing) {
-        const onReady = () => resolve();
-        window.onSpotifyWebPlaybackSDKReady = onReady;
+        window.onSpotifyWebPlaybackSDKReady = () => resolve();
         setTimeout(() => {
           if (window.Spotify) resolve();
         }, 50);
         return;
       }
+
       const script = document.createElement("script");
       script.id = "spotify-player-sdk";
       script.src = "https://sdk.scdn.co/spotify-player.js";
@@ -214,15 +231,11 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
   }
 
   async function ensureSdkActivated() {
-    if (!isHost) return;
-    if (!playerRef.current) return;
-    if (sdkActivated) return;
+    if (!isHost || !playerRef.current || sdkActivated) return;
     try {
       await playerRef.current.activateElement();
       setSdkActivated(true);
-    } catch {
-      // Ignore and let controls surface playback errors.
-    }
+    } catch {}
   }
 
   function parseSyncedLyrics(lrc: string): SyncedLine[] {
@@ -260,8 +273,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
 
     const res = await fetch(`https://lrclib.net/api/get?${query.toString()}`);
     if (!res.ok) throw new Error("No lyrics found.");
-    const data = (await res.json()) as LrcLibGetResponse;
-    return data;
+    return (await res.json()) as LrcLibGetResponse;
   }
 
   async function fetchPlainLyricsFallback(nextTrack: Track) {
@@ -307,14 +319,8 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
   async function togglePlayPause() {
     try {
       await ensureSdkActivated();
-      if (isHost) {
-        if (playerRef.current && sdkStatus === "ready") {
-          await playerRef.current.togglePlay();
-        } else {
-          const basePath = track?.isPlaying ? "/me/player/pause" : "/me/player/play";
-          const path = sdkDeviceId ? `${basePath}?device_id=${sdkDeviceId}` : basePath;
-          await hostSpotifyFetch(path, { method: "PUT" });
-        }
+      if (isHost && playerRef.current && sdkStatus === "ready") {
+        await playerRef.current.togglePlay();
       } else {
         await requestMusicControl("TOGGLE_PLAY_PAUSE");
       }
@@ -327,13 +333,8 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
   async function nextTrack() {
     try {
       await ensureSdkActivated();
-      if (isHost) {
-        if (playerRef.current && sdkStatus === "ready") {
-          await playerRef.current.nextTrack();
-        } else {
-          const path = sdkDeviceId ? `/me/player/next?device_id=${sdkDeviceId}` : "/me/player/next";
-          await hostSpotifyFetch(path, { method: "POST" });
-        }
+      if (isHost && playerRef.current && sdkStatus === "ready") {
+        await playerRef.current.nextTrack();
       } else {
         await requestMusicControl("NEXT");
       }
@@ -346,15 +347,8 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
   async function previousTrack() {
     try {
       await ensureSdkActivated();
-      if (isHost) {
-        if (playerRef.current && sdkStatus === "ready") {
-          await playerRef.current.previousTrack();
-        } else {
-          const path = sdkDeviceId
-            ? `/me/player/previous?device_id=${sdkDeviceId}`
-            : "/me/player/previous";
-          await hostSpotifyFetch(path, { method: "POST" });
-        }
+      if (isHost && playerRef.current && sdkStatus === "ready") {
+        await playerRef.current.previousTrack();
       } else {
         await requestMusicControl("PREV");
       }
@@ -386,28 +380,53 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
   async function playUri(uri: string) {
     try {
       await ensureSdkActivated();
-      if (isHost) {
-        const path = sdkDeviceId ? `/me/player/play?device_id=${sdkDeviceId}` : "/me/player/play";
-        try {
-          await hostSpotifyFetch(path, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ uris: [uri] })
-          });
-        } catch {
-          await hostSpotifyFetch("/me/player/play", {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ uris: [uri] })
-          });
-        }
-      } else {
-        await requestMusicControl("PLAY_URI", { uri });
-      }
+      await requestMusicControl("PLAY_URI", { uri });
       setTimeout(loadCurrentTrack, 240);
     } catch (e: any) {
       setSearchError(e?.message || "Could not start playback.");
     }
+  }
+
+  function suggestTrack(item: SearchTrack) {
+    if (!roomId) return;
+    socket.emit("MUSIC_SUGGEST_TRACK", { roomId, track: item });
+  }
+
+  function addToQueue(item: SearchTrack) {
+    if (!roomId) return;
+    socket.emit("MUSIC_ADD_TO_QUEUE", { roomId, track: item });
+  }
+
+  function acceptSuggestion(suggestionId: string) {
+    if (!roomId) return;
+    socket.emit("MUSIC_ACCEPT_SUGGESTION", { roomId, suggestionId });
+  }
+
+  function rejectSuggestion(suggestionId: string) {
+    if (!roomId) return;
+    socket.emit("MUSIC_REJECT_SUGGESTION", { roomId, suggestionId });
+  }
+
+  async function playQueuedNext() {
+    try {
+      await ensureSdkActivated();
+      await requestMusicControl("PLAY_QUEUED_NEXT");
+      setTimeout(loadCurrentTrack, 260);
+    } catch (e: any) {
+      setSearchError(e?.message || "Could not play next queued track.");
+    }
+  }
+
+  function claimHost() {
+    if (!roomId) return;
+    setSearchError("");
+    socket.emit("CLAIM_MUSIC_HOST", { roomId });
+  }
+
+  function releaseHost() {
+    if (!roomId) return;
+    setSearchError("");
+    socket.emit("RELEASE_MUSIC_HOST", { roomId });
   }
 
   useEffect(() => {
@@ -420,20 +439,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
     };
   }, []);
 
-  async function claimHost() {
-    if (!roomId) return;
-    setSearchError("");
-    socket.emit("CLAIM_MUSIC_HOST", { roomId });
-  }
-
-  async function releaseHost() {
-    if (!roomId) return;
-    setSearchError("");
-    socket.emit("RELEASE_MUSIC_HOST", { roomId });
-  }
-
   useEffect(() => {
-    // Clear stale errors when host state changes.
     setSearchError("");
   }, [isHost, hasHost, hostReady]);
 
@@ -640,9 +646,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
             {hasHost ? "Take Host" : "Become Host"}
           </button>
         )}
-        {isHost && (
-          <button onClick={releaseHost}>Release Host</button>
-        )}
+        {isHost && <button onClick={releaseHost}>Release Host</button>}
       </div>
 
       {isHost && !clientId && (
@@ -666,7 +670,14 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
       {isHost && connected && (
         <div className="spotify-host-row">
           <div>
-            In-app player: {sdkStatus === "ready" ? "Ready" : sdkStatus === "loading" ? "Starting..." : sdkStatus === "error" ? "Error" : "Idle"}
+            In-app player:{" "}
+            {sdkStatus === "ready"
+              ? "Ready"
+              : sdkStatus === "loading"
+                ? "Starting..."
+                : sdkStatus === "error"
+                  ? "Error"
+                  : "Idle"}
             {sdkDeviceId ? ` (Device ${sdkDeviceId.slice(0, 6)}...)` : ""}
             {sdkStatus === "ready" && !sdkActivated ? " - Audio not enabled yet" : ""}
           </div>
@@ -718,8 +729,15 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
 
       <div className="spotify-controls">
         <button onClick={previousTrack} disabled={!hostReady}>Prev</button>
-        <button onClick={togglePlayPause} disabled={!hostReady}>{track?.isPlaying ? "Pause" : "Play"}</button>
+        <button onClick={togglePlayPause} disabled={!hostReady}>
+          {track?.isPlaying ? "Pause" : "Play"}
+        </button>
         <button onClick={nextTrack} disabled={!hostReady}>Next</button>
+        {isHost && (
+          <button onClick={playQueuedNext} disabled={!hostReady || queue.length === 0}>
+            Play Queue Next ({queue.length})
+          </button>
+        )}
       </div>
 
       <div className="spotify-search">
@@ -752,7 +770,66 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
                   </div>
                 </div>
                 <div className="spotify-search-actions">
-                  <button onClick={() => playUri(item.uri)} disabled={!hostReady}>Play</button>
+                  {isHost ? (
+                    <>
+                      <button onClick={() => playUri(item.uri)} disabled={!hostReady}>Play</button>
+                      <button onClick={() => addToQueue(item)}>Queue</button>
+                    </>
+                  ) : (
+                    <button onClick={() => suggestTrack(item)}>Suggest</button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="spotify-search">
+        <div className="spotify-host-row">
+          <strong>Suggestions ({suggestions.length})</strong>
+        </div>
+        {suggestions.length === 0 && <div className="spotify-sdk-status">No suggestions yet.</div>}
+        {suggestions.length > 0 && (
+          <div className="spotify-search-results">
+            {suggestions.map((item) => (
+              <div key={item.suggestionId} className="spotify-search-item">
+                <div className="spotify-search-meta">
+                  {item.albumImage && <img src={item.albumImage} alt={`${item.name} cover`} />}
+                  <div>
+                    <strong>{item.name}</strong>
+                    <div>{item.artists}</div>
+                    <div>by {item.suggestedByName || "Someone"}</div>
+                  </div>
+                </div>
+                {isHost && (
+                  <div className="spotify-search-actions">
+                    <button onClick={() => acceptSuggestion(item.suggestionId)}>Accept</button>
+                    <button onClick={() => rejectSuggestion(item.suggestionId)}>Reject</button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="spotify-search">
+        <div className="spotify-host-row">
+          <strong>Queue ({queue.length})</strong>
+        </div>
+        {queue.length === 0 && <div className="spotify-sdk-status">Queue is empty.</div>}
+        {queue.length > 0 && (
+          <div className="spotify-search-results">
+            {queue.map((item, idx) => (
+              <div key={item.queueId} className="spotify-search-item">
+                <div className="spotify-search-meta">
+                  {item.albumImage && <img src={item.albumImage} alt={`${item.name} cover`} />}
+                  <div>
+                    <strong>{idx + 1}. {item.name}</strong>
+                    <div>{item.artists}</div>
+                    <div>from {item.suggestedByName || "Host"}</div>
+                  </div>
                 </div>
               </div>
             ))}
@@ -775,6 +852,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
             />
           </label>
         </div>
+
         {lyricsLoading && <div className="spotify-lyrics-loading">Loading lyrics...</div>}
         {!lyricsLoading && syncedLyrics.length > 0 && (
           <div className="spotify-karaoke">
@@ -797,6 +875,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
             ))}
           </div>
         )}
+
         {!lyricsLoading && syncedLyrics.length === 0 && (
           <pre>{plainLyrics || "No lyrics yet."}</pre>
         )}

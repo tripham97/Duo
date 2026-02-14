@@ -18,6 +18,8 @@ const io = new Server(server, {
 const MAX_SCORE = 5;
 const MAX_WRONG_GUESSES = 5;
 const MAX_LOBBY_NOTES = 50;
+const MAX_MUSIC_SUGGESTIONS = 100;
+const MAX_MUSIC_QUEUE = 200;
 const SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token";
 const SPOTIFY_API_BASE = "https://api.spotify.com/v1";
 const DEFAULT_WHEEL_OPTIONS = [
@@ -48,6 +50,26 @@ function normalizeWheelOptions(options) {
 
 function normalizeLobbyNote(text) {
   return String(text || "").trim().slice(0, 220);
+}
+
+function makeId(prefix) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeTrackCandidate(track) {
+  if (!track || typeof track !== "object") return null;
+  const uri = String(track.uri || "").trim();
+  const name = String(track.name || "").trim().slice(0, 160);
+  if (!uri || !name) return null;
+  if (!uri.startsWith("spotify:track:")) return null;
+
+  return {
+    id: String(track.id || "").trim().slice(0, 120),
+    uri,
+    name,
+    artists: String(track.artists || "").trim().slice(0, 220),
+    albumImage: String(track.albumImage || "").trim().slice(0, 500)
+  };
 }
 
 async function refreshSpotifySession(clientId, refreshToken) {
@@ -229,7 +251,9 @@ io.on("connection", (socket) => {
         hostDeviceId: null,
         hasHostSession: false,
         clientId: null,
-        hostSession: null
+        hostSession: null,
+        suggestions: [],
+        queue: []
       },
       lobbyNotes: []
     };
@@ -277,7 +301,9 @@ io.on("connection", (socket) => {
           hostDeviceId: null,
           hasHostSession: false,
           clientId: null,
-          hostSession: null
+          hostSession: null,
+          suggestions: [],
+          queue: []
         },
         lobbyNotes: []
       };
@@ -601,6 +627,99 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("ROOM_STATE", room);
   });
 
+  socket.on("MUSIC_SUGGEST_TRACK", ({ roomId, track }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+    const user = room.users.find((u) => u.socketId === socket.id);
+    if (!user) return;
+
+    const normalized = normalizeTrackCandidate(track);
+    if (!normalized) return;
+
+    room.music.suggestions = room.music.suggestions || [];
+    room.music.suggestions.push({
+      suggestionId: makeId("sg"),
+      ...normalized,
+      suggestedByUserKey: user.userKey,
+      suggestedByName: user.name,
+      createdAt: Date.now()
+    });
+    if (room.music.suggestions.length > MAX_MUSIC_SUGGESTIONS) {
+      room.music.suggestions = room.music.suggestions.slice(-MAX_MUSIC_SUGGESTIONS);
+    }
+    io.to(roomId).emit("ROOM_STATE", room);
+  });
+
+  socket.on("MUSIC_ACCEPT_SUGGESTION", ({ roomId, suggestionId }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+    const user = room.users.find((u) => u.socketId === socket.id);
+    if (!user) return;
+    if (room.music?.hostUserKey !== user.userKey) return;
+
+    room.music.suggestions = room.music.suggestions || [];
+    const idx = room.music.suggestions.findIndex((s) => s.suggestionId === suggestionId);
+    if (idx < 0) return;
+    const suggestion = room.music.suggestions[idx];
+    room.music.suggestions.splice(idx, 1);
+
+    room.music.queue = room.music.queue || [];
+    room.music.queue.push({
+      queueId: makeId("q"),
+      id: suggestion.id,
+      uri: suggestion.uri,
+      name: suggestion.name,
+      artists: suggestion.artists,
+      albumImage: suggestion.albumImage,
+      suggestedByUserKey: suggestion.suggestedByUserKey,
+      suggestedByName: suggestion.suggestedByName,
+      acceptedByUserKey: user.userKey,
+      acceptedAt: Date.now()
+    });
+    if (room.music.queue.length > MAX_MUSIC_QUEUE) {
+      room.music.queue = room.music.queue.slice(-MAX_MUSIC_QUEUE);
+    }
+    io.to(roomId).emit("ROOM_STATE", room);
+  });
+
+  socket.on("MUSIC_REJECT_SUGGESTION", ({ roomId, suggestionId }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+    const user = room.users.find((u) => u.socketId === socket.id);
+    if (!user) return;
+    if (room.music?.hostUserKey !== user.userKey) return;
+
+    room.music.suggestions = (room.music.suggestions || []).filter(
+      (s) => s.suggestionId !== suggestionId
+    );
+    io.to(roomId).emit("ROOM_STATE", room);
+  });
+
+  socket.on("MUSIC_ADD_TO_QUEUE", ({ roomId, track }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+    const user = room.users.find((u) => u.socketId === socket.id);
+    if (!user) return;
+    if (room.music?.hostUserKey !== user.userKey) return;
+
+    const normalized = normalizeTrackCandidate(track);
+    if (!normalized) return;
+
+    room.music.queue = room.music.queue || [];
+    room.music.queue.push({
+      queueId: makeId("q"),
+      ...normalized,
+      suggestedByUserKey: user.userKey,
+      suggestedByName: user.name,
+      acceptedByUserKey: user.userKey,
+      acceptedAt: Date.now()
+    });
+    if (room.music.queue.length > MAX_MUSIC_QUEUE) {
+      room.music.queue = room.music.queue.slice(-MAX_MUSIC_QUEUE);
+    }
+    io.to(roomId).emit("ROOM_STATE", room);
+  });
+
   socket.on("SPOTIFY_HOST_SESSION_UPDATE", ({ roomId, clientId, session }) => {
     const room = rooms[roomId];
     if (!room) return;
@@ -718,6 +837,28 @@ io.on("connection", (socket) => {
           body: JSON.stringify({ uris: [uri] })
         });
         done({ ok: true });
+        return;
+      }
+
+      if (action === "PLAY_QUEUED_NEXT") {
+        if (user.userKey !== room.music?.hostUserKey) {
+          done({ ok: false, error: "Only host can play from queue." });
+          return;
+        }
+        room.music.queue = room.music.queue || [];
+        if (room.music.queue.length === 0) {
+          done({ ok: false, error: "Queue is empty." });
+          return;
+        }
+
+        const next = room.music.queue.shift();
+        await spotifyHostFetch(room, `/me/player/play${getMusicDeviceQuery(room)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uris: [next.uri] })
+        });
+        io.to(roomId).emit("ROOM_STATE", room);
+        done({ ok: true, data: next });
         return;
       }
 
