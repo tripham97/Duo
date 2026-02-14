@@ -92,6 +92,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
   const [error, setError] = useState<string>("");
   const activeLineRef = useRef<HTMLDivElement | null>(null);
   const playerRef = useRef<any>(null);
+  const syncedTrackRef = useRef<string>("");
 
   const clientId = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || "";
   const redirectUri =
@@ -232,7 +233,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
   }
 
   async function ensureSdkActivated() {
-    if (!isHost || !playerRef.current || sdkActivated) return;
+    if (!playerRef.current || sdkActivated) return;
     try {
       await playerRef.current.activateElement();
       setSdkActivated(true);
@@ -464,7 +465,8 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
   }, [isHost, connected, sessionReady, roomId]);
 
   useEffect(() => {
-    if (!isHost || !connected || !clientId || !roomId) {
+    const shouldInitLocalSdk = !!connected && !!clientId && !!roomId && (isHost || guestAudioEnabled);
+    if (!shouldInitLocalSdk) {
       if (playerRef.current) {
         playerRef.current.disconnect();
         playerRef.current = null;
@@ -472,6 +474,7 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
       setSdkStatus("idle");
       setSdkDeviceId("");
       setSdkActivated(false);
+      syncedTrackRef.current = "";
       return;
     }
 
@@ -500,10 +503,12 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
           if (ignore) return;
           setSdkDeviceId(device_id);
           setSdkStatus("ready");
-          socket.emit("SPOTIFY_HOST_DEVICE_UPDATE", { roomId, deviceId: device_id });
-          transferToInAppDevice(device_id, true).catch(() => {
-            setSearchError("Player ready, but failed to transfer playback.");
-          });
+          if (isHost) {
+            socket.emit("SPOTIFY_HOST_DEVICE_UPDATE", { roomId, deviceId: device_id });
+            transferToInAppDevice(device_id, true).catch(() => {
+              setSearchError("Player ready, but failed to transfer playback.");
+            });
+          }
         });
 
         player.addListener("not_ready", () => {
@@ -565,8 +570,33 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
       setSdkStatus("idle");
       setSdkDeviceId("");
       setSdkActivated(false);
+      syncedTrackRef.current = "";
     };
-  }, [isHost, connected, clientId, roomId, sessionReady]);
+  }, [isHost, guestAudioEnabled, connected, clientId, roomId, sessionReady]);
+
+  useEffect(() => {
+    if (isHost) return;
+    if (!guestAudioEnabled) return;
+    if (!sdkActivated || sdkStatus !== "ready" || !sdkDeviceId) return;
+    if (!track?.id) return;
+    if (syncedTrackRef.current === track.id) return;
+
+    const uri = `spotify:track:${track.id}`;
+    hostSpotifyFetch(`/me/player/play?device_id=${encodeURIComponent(sdkDeviceId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        uris: [uri],
+        position_ms: Math.max(0, Math.floor(track.progressMs || 0))
+      })
+    })
+      .then(() => {
+        syncedTrackRef.current = track.id;
+      })
+      .catch((e: any) => {
+        setSearchError(e?.message || "Could not sync guest audio.");
+      });
+  }, [isHost, guestAudioEnabled, sdkActivated, sdkStatus, sdkDeviceId, track?.id, track?.progressMs]);
 
   useEffect(() => {
     if (!hostReady) return;
@@ -721,25 +751,40 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
           <div>
             Listener audio: {guestAudioEnabled ? "Enabled" : "Off"}
           </div>
+          {!connected && clientId && (
+            <button
+              onClick={() =>
+                startSpotifyLogin(
+                  clientId,
+                  redirectUri,
+                  window.location.pathname + window.location.search
+                )
+              }
+            >
+              Connect Spotify
+            </button>
+          )}
+          {connected && (
+            <button
+              onClick={() => {
+                clearSession();
+                setGuestAudioEnabled(false);
+                setSdkActivated(false);
+                setSessionReady((v) => !v);
+              }}
+            >
+              Disconnect
+            </button>
+          )}
           <button
             onClick={() => setGuestAudioEnabled((v) => !v)}
-            disabled={!track?.id}
+            disabled={!track?.id || !connected}
           >
             {guestAudioEnabled ? "Disable Audio" : "Enable Audio"}
           </button>
-        </div>
-      )}
-
-      {!isHost && guestAudioEnabled && track?.id && (
-        <div className="spotify-embed-wrap">
-          <iframe
-            title="Spotify Guest Audio"
-            src={`https://open.spotify.com/embed/track/${track.id}?utm_source=generator`}
-            width="100%"
-            height="152"
-            allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
-            loading="lazy"
-          />
+          {guestAudioEnabled && connected && sdkStatus === "ready" && !sdkActivated && (
+            <button onClick={ensureSdkActivated}>Activate Audio</button>
+          )}
         </div>
       )}
 
