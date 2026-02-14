@@ -164,6 +164,21 @@ input, button, select {
   background: rgba(24, 36, 58, 0.82);
 }
 
+.screenshot-btn {
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #eaf3ff;
+  background: rgba(12, 19, 33, 0.7);
+  cursor: pointer;
+}
+
+.screenshot-btn:hover {
+  background: rgba(24, 36, 58, 0.82);
+}
+
 .leave-btn {
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 8px;
@@ -199,6 +214,23 @@ input, button, select {
 }
 
 .guess-wrap input {
+  min-width: 260px;
+}
+
+.word-entry {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  font-size: 13px;
+}
+
+.word-entry-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.word-entry-row input {
   min-width: 260px;
 }
 

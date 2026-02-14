@@ -172,7 +172,7 @@ function rotateRoles(room) {
   room.game.guesserUserKey = nextGuesserUserKey;
   room.game.drawerId = nextDrawer?.socketId || null;
   room.game.guesserId = nextGuesser?.socketId || null;
-  room.game.currentWord = randomWord();
+  room.game.currentWord = null;
   room.game.strokes = [];
   room.game.winnerUserKey = null;
   room.game.wrongGuessCount = 0;
@@ -199,7 +199,7 @@ function startRound(room) {
   room.game.guesserId = u2.socketId;
   room.game.drawerUserKey = u1.userKey;
   room.game.guesserUserKey = u2.userKey;
-  room.game.currentWord = randomWord();
+  room.game.currentWord = null;
   room.game.strokes = [];
   room.game.winnerUserKey = null;
   room.game.wrongGuessCount = 0;
@@ -381,12 +381,8 @@ io.on("connection", (socket) => {
       room.game.guesserId = u2.socketId;
       room.game.drawerUserKey = u1.userKey;
       room.game.guesserUserKey = u2.userKey;
-      room.game.currentWord = randomWord();
+      room.game.currentWord = null;
       room.game.winnerUserKey = null;
-
-      io.to(room.game.drawerId).emit("ASSIGN_WORD", {
-        word: room.game.currentWord
-      });
     }
 
     // Re-send current word to drawer on reconnect/refresh.
@@ -440,6 +436,31 @@ io.on("connection", (socket) => {
   });
 
   // ========================
+  // DRAWER SETS CUSTOM WORD
+  // ========================
+  socket.on("SET_DRAW_WORD", ({ roomId, word }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+    if (!room.game.drawerUserKey || !room.game.guesserUserKey) return;
+    if (socket.id !== room.game.drawerId) {
+      io.to(socket.id).emit("WORD_ERROR", { message: "Only drawer can set the word." });
+      return;
+    }
+
+    const nextWord = String(word || "").trim().slice(0, 40);
+    if (!nextWord) {
+      io.to(socket.id).emit("WORD_ERROR", { message: "Enter a word first." });
+      return;
+    }
+
+    room.game.currentWord = nextWord;
+    room.game.wrongGuessCount = 0;
+
+    io.to(socket.id).emit("ASSIGN_WORD", { word: nextWord });
+    io.to(roomId).emit("ROOM_STATE", room);
+  });
+
+  // ========================
   // GUESS HANDLER + ROLE SWAP
   // ========================
   socket.on("GUESS", ({ roomId, guess }) => {
@@ -462,12 +483,6 @@ io.on("connection", (socket) => {
         io.to(roomId).emit("ROUND_SKIPPED", {
           word: skippedWord
         });
-
-        if (room.game.drawerId) {
-          io.to(room.game.drawerId).emit("ASSIGN_WORD", {
-            word: room.game.currentWord
-          });
-        }
 
         io.to(roomId).emit("CLEAR_CANVAS");
         io.to(roomId).emit("ROOM_STATE", room);
@@ -521,12 +536,6 @@ io.on("connection", (socket) => {
       maxScore: MAX_SCORE
     });
 
-    if (room.game.drawerId) {
-      io.to(room.game.drawerId).emit("ASSIGN_WORD", {
-        word: room.game.currentWord
-      });
-    }
-
     io.to(roomId).emit("CLEAR_CANVAS");
     io.to(roomId).emit("ROOM_STATE", room);
   });
@@ -548,12 +557,6 @@ io.on("connection", (socket) => {
       word: skippedWord
     });
 
-    if (room.game.drawerId) {
-      io.to(room.game.drawerId).emit("ASSIGN_WORD", {
-        word: room.game.currentWord
-      });
-    }
-
     io.to(roomId).emit("CLEAR_CANVAS");
     io.to(roomId).emit("ROOM_STATE", room);
   });
@@ -573,12 +576,6 @@ io.on("connection", (socket) => {
     });
     startRound(room);
     syncWheelTurn(room);
-
-    if (room.game.drawerId) {
-      io.to(room.game.drawerId).emit("ASSIGN_WORD", {
-        word: room.game.currentWord
-      });
-    }
 
     io.to(roomId).emit("CLEAR_CANVAS");
     io.to(roomId).emit("GAME_RESTARTED");

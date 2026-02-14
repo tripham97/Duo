@@ -22,6 +22,8 @@ export default function Room() {
   const [brushSize, setBrushSize] = useState(3);
   const [winnerText, setWinnerText] = useState<string | null>(null);
   const [wrongGuessMessage, setWrongGuessMessage] = useState<string | null>(null);
+  const [wordInput, setWordInput] = useState("");
+  const [wordError, setWordError] = useState<string | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
   const [confettiPieces, setConfettiPieces] = useState<any[]>([]);
   const confettiTimer = useRef<any>(null);
@@ -38,6 +40,9 @@ export default function Room() {
       setJoinError(message || "Unable to join room.");
     };
     const onAssignWord = ({ word }: { word: string }) => setSecretWord(word);
+    const onWordError = ({ message }: { message: string }) => {
+      setWordError(message || "Unable to set word.");
+    };
     const onClearCanvas = () => {
       window.dispatchEvent(new Event("clearCanvas"));
       setWrongGuessMessage(null);
@@ -76,6 +81,7 @@ export default function Room() {
 
     socket.on("ROOM_STATE", onRoomState);
     socket.on("ASSIGN_WORD", onAssignWord);
+    socket.on("WORD_ERROR", onWordError);
     socket.on("CLEAR_CANVAS", onClearCanvas);
     socket.on("JOIN_ERROR", onJoinError);
     socket.on("WRONG_GUESS", onWrongGuess);
@@ -94,6 +100,7 @@ export default function Room() {
     return () => {
       socket.off("ROOM_STATE", onRoomState);
       socket.off("ASSIGN_WORD", onAssignWord);
+      socket.off("WORD_ERROR", onWordError);
       socket.off("CLEAR_CANVAS", onClearCanvas);
       socket.off("JOIN_ERROR", onJoinError);
       socket.off("WRONG_GUESS", onWrongGuess);
@@ -104,6 +111,28 @@ export default function Room() {
       socket.disconnect();
     };
   }, [roomId, pin]);
+
+  useEffect(() => {
+    if (!room) return;
+    const currentUserKey = localStorage.getItem("userKey");
+    const currentMe = room.users.find((u: any) => u.userKey === currentUserKey);
+    const amDrawer =
+      currentMe?.userKey === room.game.drawerUserKey ||
+      currentMe?.socketId === room.game.drawerId;
+
+    if (!amDrawer) {
+      setSecretWord(null);
+      setWordError(null);
+      setWordInput("");
+      return;
+    }
+
+    if (!room.game.currentWord) {
+      setSecretWord(null);
+    } else if (!secretWord) {
+      setSecretWord(room.game.currentWord);
+    }
+  }, [room, secretWord]);
 
   useEffect(() => {
     if (!roomId) return;
@@ -134,8 +163,22 @@ export default function Room() {
     if (!roomId) return;
     socket.emit("RESTART_GAME", { roomId });
   };
+  const screenshotCanvas = () => {
+    const canvas = document.querySelector("canvas.canvas-full") as HTMLCanvasElement | null;
+    if (!canvas) return;
+    const link = document.createElement("a");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    link.href = canvas.toDataURL("image/png");
+    link.download = `drawing-${roomId || "room"}-${stamp}.png`;
+    link.click();
+  };
   const leaveCurrentGame = () => {
     setActiveTab("LOBBY");
+  };
+  const submitWord = () => {
+    if (!roomId) return;
+    setWordError(null);
+    socket.emit("SET_DRAW_WORD", { roomId, word: wordInput });
   };
 
   return (
@@ -223,12 +266,42 @@ export default function Room() {
                     <button className="clear-btn" onClick={clearCanvas}>
                       Clear Canvas
                     </button>
+                    <button className="screenshot-btn" onClick={screenshotCanvas}>
+                      Screenshot
+                    </button>
+                  </div>
+                )}
+
+                {isDrawer && !secretWord && (
+                  <div className="word-entry">
+                    <span>Enter your word for this round:</span>
+                    <div className="word-entry-row">
+                      <input
+                        value={wordInput}
+                        onChange={(e) => setWordInput(e.target.value)}
+                        maxLength={40}
+                        placeholder="Type a word..."
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            submitWord();
+                          }
+                        }}
+                      />
+                      <button className="clear-btn" onClick={submitWord}>
+                        Set Word
+                      </button>
+                    </div>
+                    {wordError && <div className="guess-error">{wordError}</div>}
                   </div>
                 )}
 
                 {!isDrawer && (
                   <div className="guess-wrap">
                     <GuessInput roomId={roomId} />
+                    <button className="screenshot-btn" onClick={screenshotCanvas}>
+                      Screenshot
+                    </button>
                     {wrongGuessMessage && (
                       <div className="guess-error">{wrongGuessMessage}</div>
                     )}
