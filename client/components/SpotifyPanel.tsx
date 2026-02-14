@@ -389,6 +389,33 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
     }
   }
 
+  async function playOnMyPlayer(uri: string, trackId: string) {
+    try {
+      if (!connected) {
+        setSearchError("Connect Spotify first.");
+        return;
+      }
+      if (!guestAudioEnabled) {
+        setSearchError("Enable Audio first.");
+        return;
+      }
+      if (sdkStatus !== "ready" || !sdkDeviceId) {
+        setSearchError("Audio player is not ready yet.");
+        return;
+      }
+      await ensureSdkActivated();
+      await hostSpotifyFetch(`/me/player/play?device_id=${encodeURIComponent(sdkDeviceId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uris: [uri] })
+      });
+      syncedTrackRef.current = trackId;
+      setSearchError("");
+    } catch (e: any) {
+      setSearchError(e?.message || "Could not play on your player.");
+    }
+  }
+
   function suggestTrack(item: SearchTrack) {
     if (!roomId) return;
     socket.emit("MUSIC_SUGGEST_TRACK", { roomId, track: item });
@@ -849,7 +876,15 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
                       <button onClick={() => addToQueue(item)}>Queue</button>
                     </>
                   ) : (
-                    <button onClick={() => suggestTrack(item)}>Suggest</button>
+                    <>
+                      <button
+                        onClick={() => playOnMyPlayer(item.uri, item.id)}
+                        disabled={!connected || !guestAudioEnabled || sdkStatus !== "ready"}
+                      >
+                        Play
+                      </button>
+                      <button onClick={() => suggestTrack(item)}>Suggest</button>
+                    </>
                   )}
                 </div>
               </div>
