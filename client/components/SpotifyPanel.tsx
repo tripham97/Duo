@@ -143,6 +143,21 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
     }
   }
 
+  async function hostSpotifyFetch(path: string, init?: RequestInit) {
+    const session = await ensureSession();
+    if (!session?.accessToken) throw new Error("Host Spotify session missing.");
+    const res = await fetch(`https://api.spotify.com/v1${path}`, {
+      ...init,
+      headers: {
+        ...(init?.headers || {}),
+        Authorization: `Bearer ${session.accessToken}`
+      }
+    });
+    if (res.status === 204) return null;
+    if (!res.ok) throw new Error(`Spotify API failed (${res.status}).`);
+    return res.json();
+  }
+
   async function loadSpotifySdkScript() {
     if (window.Spotify) return;
     await new Promise<void>((resolve, reject) => {
@@ -177,6 +192,18 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
     } catch (e: any) {
       setError(e?.message || "Failed to load Spotify playback.");
     }
+  }
+
+  async function transferToInAppDevice(deviceId: string, keepPaused = true) {
+    if (!isHost) return;
+    await hostSpotifyFetch("/me/player", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        device_ids: [deviceId],
+        play: !keepPaused
+      })
+    });
   }
 
   async function ensureSdkActivated() {
@@ -273,7 +300,13 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
   async function togglePlayPause() {
     try {
       await ensureSdkActivated();
-      await requestMusicControl("TOGGLE_PLAY_PAUSE");
+      if (isHost) {
+        const basePath = track?.isPlaying ? "/me/player/pause" : "/me/player/play";
+        const path = sdkDeviceId ? `${basePath}?device_id=${sdkDeviceId}` : basePath;
+        await hostSpotifyFetch(path, { method: "PUT" });
+      } else {
+        await requestMusicControl("TOGGLE_PLAY_PAUSE");
+      }
       setTimeout(loadCurrentTrack, 220);
     } catch (e: any) {
       setSearchError(e?.message || "Could not toggle playback.");
@@ -283,7 +316,12 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
   async function nextTrack() {
     try {
       await ensureSdkActivated();
-      await requestMusicControl("NEXT");
+      if (isHost) {
+        const path = sdkDeviceId ? `/me/player/next?device_id=${sdkDeviceId}` : "/me/player/next";
+        await hostSpotifyFetch(path, { method: "POST" });
+      } else {
+        await requestMusicControl("NEXT");
+      }
       setTimeout(loadCurrentTrack, 220);
     } catch (e: any) {
       setSearchError(e?.message || "Could not go to next track.");
@@ -293,7 +331,14 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
   async function previousTrack() {
     try {
       await ensureSdkActivated();
-      await requestMusicControl("PREV");
+      if (isHost) {
+        const path = sdkDeviceId
+          ? `/me/player/previous?device_id=${sdkDeviceId}`
+          : "/me/player/previous";
+        await hostSpotifyFetch(path, { method: "POST" });
+      } else {
+        await requestMusicControl("PREV");
+      }
       setTimeout(loadCurrentTrack, 220);
     } catch (e: any) {
       setSearchError(e?.message || "Could not go to previous track.");
@@ -322,7 +367,16 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
   async function playUri(uri: string) {
     try {
       await ensureSdkActivated();
-      await requestMusicControl("PLAY_URI", { uri });
+      if (isHost) {
+        const path = sdkDeviceId ? `/me/player/play?device_id=${sdkDeviceId}` : "/me/player/play";
+        await hostSpotifyFetch(path, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uris: [uri] })
+        });
+      } else {
+        await requestMusicControl("PLAY_URI", { uri });
+      }
       setTimeout(loadCurrentTrack, 240);
     } catch (e: any) {
       setSearchError(e?.message || "Could not start playback.");
@@ -386,6 +440,9 @@ export default function SpotifyPanel({ roomId, myUserKey, musicState }: SpotifyP
           setSdkDeviceId(device_id);
           setSdkStatus("ready");
           socket.emit("SPOTIFY_HOST_DEVICE_UPDATE", { roomId, deviceId: device_id });
+          transferToInAppDevice(device_id, true).catch(() => {
+            setSearchError("Player ready, but failed to transfer playback.");
+          });
         });
 
         player.addListener("not_ready", () => {
